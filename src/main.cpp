@@ -2,82 +2,117 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <TFT_eSPI.h>
+#include <vector>
+#include <WiFi.h>
+#include <Wire.h>
+#include <HTTPClient.h> // <-- This one, not HttpClient.h!
+#include <WiFiClientSecure.h>
 
-// Custom SPI pinsff
-#define RST_PIN         13   // Reset pin
-#define SS_PIN          33   // SDA/SS pin
-#define SCK_PIN         25
-#define MISO_PIN        27
-#define MOSI_PIN        26
+#define RST_PIN   13
+#define SS_PIN    33
+#define SCK_PIN   25
+#define MISO_PIN  27
+#define MOSI_PIN  26
 
-MFRC522 mfrc522(SS_PIN, RST_PIN);   // Create MFRC522 instance.
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+TFT_eSPI tft = TFT_eSPI();
 
-TFT_eSPI tft = TFT_eSPI(); // TFT instance
+char ssid[] = "iPhone";
+char pass[] = "ajHsb123";
+
+const char* server = "https://uniqlo2.vercel.app/api/checkout/total"; // <-- Full URL for HTTPClient
+
+std::vector<String> scannedUIDs;
+
+void sendUIDToServer(uint64_t uid) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    WiFiClientSecure client;
+
+    client.setInsecure(); // Disable SSL certificate verification
+
+    http.begin(client, server); // full URL with secure client
+    http.addHeader("Content-Type", "application/json");
+
+    String postData = "{\"tagIds\": [" + String(uid) + "]}";
+
+    Serial.println(postData);
+
+    int httpResponseCode = http.POST(postData);
+
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+
+    String response = http.getString();
+    Serial.println("Server response: " + response);
+
+    http.end();
+  } else {
+    Serial.println("WiFi not connected!");
+  }
+}
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
 
-  tft.init();
-  tft.setRotation(1);
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextSize(2);
-  tft.setCursor(0, 0);
-  tft.println("RFID Reader");
-
-  Serial.println("RFID Reader Starting...");
+  WiFi.begin(ssid, pass);
+  Serial.println("Connecting to WiFi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected! IP: ");
+  Serial.println(WiFi.localIP());
 
   SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
   mfrc522.PCD_Init();
-  delay(100); // add delay to allow the reader to initialize
-
+  delay(100);
   Serial.println("RFID Init complete. Tap your card...");
-
 }
 
 void loop() {
-  Serial.println("Waiting for card...");
-  delay(1000);
+  for (size_t i = 0; i < scannedUIDs.size(); i++) {
+    tft.setCursor(0, 15 + (i * 12));
+    tft.println(scannedUIDs[i]);
+  }
 
-  if (!mfrc522.PICC_IsNewCardPresent()) {
+  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
+    delay(500);
     return;
   }
 
-  if (!mfrc522.PICC_ReadCardSerial()) {
-    return;
-  }
-
-  Serial.print("Tag UID: ");
-  String content = "";
+  String uidStr = "";
   for (byte i = 0; i < mfrc522.uid.size; i++) {
-    Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
-    Serial.print(mfrc522.uid.uidByte[i], HEX);
-    content.concat(String(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " "));
-    content.concat(String(mfrc522.uid.uidByte[i], HEX));
+    uidStr.concat(String(mfrc522.uid.uidByte[i] < 0x10 ? "0" : ""));
+    uidStr.concat(String(mfrc522.uid.uidByte[i], HEX));
+    if (i < mfrc522.uid.size - 1) uidStr.concat(" ");
   }
-  Serial.println();
+  uidStr.toUpperCase();
 
-  content.toUpperCase();
-  if (content.substring(1) == "A3 3B AE 1A") { // Replace with your UID
-    Serial.println("Authorized access");
-    Serial.println("Clothing Piece: Wide Pleated Sweatpants");
-  } else {
-    Serial.println("Access denied");
+  bool alreadyScanned = false;
+  for (const auto& uid : scannedUIDs) {
+    if (uid == uidStr) {
+      alreadyScanned = true;
+      Serial.println("Duplicate UID, skipping...");
+      break;
+    }
   }
 
-  // Display UID on TFT
-  tft.fillScreen(TFT_BLACK);
-  tft.setCursor(0, 0);
-  tft.println("RFID UID:");
-  tft.setTextSize(3);
-  tft.setCursor(0, 30);
-  tft.println(content);
+  if (!alreadyScanned) {
+    Serial.println("New UID: " + uidStr);
+    scannedUIDs.push_back(uidStr);
 
-  // stop reading uid so new one can be detected
-  // mfrc522.PICC_HaltA(); // build-in function to halt PICC
-  // mfrc522.PCD_StopCrypto1();
+    uint64_t fullUID = 0; // construct the full hex representation; use 64 bits to support full hex length
+    for (byte i = 0; i < mfrc522.uid.size; i++) {
+      fullUID = fullUID << 8 | mfrc522.uid.uidByte[i]; // make space for the next byte, then write current byte to first 8 bits
+    }
 
-  //remove delay to allow contrinous stream mode 
-  delay(2000); // add delay to allow next tag detection
+    sendUIDToServer(fullUID);
+  }
+
+  mfrc522.PICC_HaltA();
+  mfrc522.PCD_StopCrypto1();
+
+  delay(1000);
 }
