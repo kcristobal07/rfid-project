@@ -28,7 +28,7 @@ Frontend repo: [Link to peer’s repository](https://github.com/mhayescs19/uniql
 - Fully Wi-Fi enabled IoT integration with cloud backend.
 ---
 ## System Architecture
-![System Architecture]()
+![System Architecture](rfid_project-system_architecture.jpg)
 
 **Workflow:**
 1. ESP32 TTGO32 reads RFID tag UIDs.
